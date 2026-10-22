@@ -9,11 +9,14 @@ Konfigurationsseite.
 ## Funktionen
 
 - Messung alle 10 s über I²C, CRC-geprüft (SHT35, Single-Shot, hohe Wiederholrate)
+- Statusanzeige auf der RGB-LED des Boards (WLAN, Sensor, Feldstärke)
 - `GET /` – dunkle Webseite mit Temperatur und Feuchte, aktualisiert sich alle 10 s
 - `GET /api/values` (auch `/api`) – dieselben Werte als JSON
 - Uhrzeit per NTP inkl. Zeitzone Europa/Berlin
 - WLAN-Zugangsdaten und Gerätename werden in NVS gespeichert, änderbar über die
   Konfigurationsseite – ohne Neubau der Firmware
+- Im Heimnetz per Namen erreichbar: `http://<name>.local/` (mDNS), unabhängig
+  vom DNS des Routers
 - Konfigurations-AP mit Netzwerkscan und Formular
 - Reset-Grund wird beim Start geloggt (z. B. `power on`, `BROWNOUT`)
 
@@ -61,6 +64,64 @@ Board-Einstellungen stehen in [sdkconfig.defaults](sdkconfig.defaults)
 (16 MB Flash, 8 MB Octal-PSRAM, 240 MHz) und
 [partitions.csv](partitions.csv) (4 MB Applikation, keine OTA-Slots).
 
+## Statusanzeige (RGB-LED)
+
+Die adressierbare WS2812 auf dem DevKitC-1 zeigt den Betriebszustand. Alle
+Blinkmuster nutzen **125 ms an / 125 ms aus**; „N× blinken" heißt N Blinks
+hintereinander, danach eine Pause.
+
+### Grün – WLAN
+
+| Zustand | Anzeige |
+|---|---|
+| Verbindung wird aufgebaut, oder kein WLAN erreichbar | dauerhaftes Blinken, 4× pro Sekunde (125 ms an/aus) |
+| Konfigurationsmodus (Access Point aktiv) | 2× blinken, dann 1000 ms aus |
+| Mit dem Heimnetz verbunden | leuchtet dauerhaft |
+
+### Rot – Sensor
+
+| Zustand | Anzeige |
+|---|---|
+| SHT35 beim Start nicht gefunden (I²C-Fehler) | leuchtet dauerhaft |
+| Sensor in Ordnung | aus |
+
+### Blau – Feldstärke
+
+Wird nur angezeigt, solange eine WLAN-Verbindung besteht.
+
+| Empfangspegel | Anzeige |
+|---|---|
+| 0 bis −50 dBm (gut) | 3× blinken, dann 1000 ms aus |
+| −50 bis −65 dBm (mittel) | 2× blinken, dann 1000 ms aus |
+| −65 bis −80 dBm (schwach) | 1× blinken, dann 1000 ms aus |
+| unter −80 dBm | aus |
+
+Der Pegel wird einmal pro Sekunde abgefragt, die Blinkmuster laufen unabhängig
+davon weiter. Die Farben werden gemischt, damit gleichzeitig sichtbar ist:
+Beispiel „grün dauerhaft + blau 3× blinkend" = verbunden, gute Verbindung.
+
+### Einstellen
+
+In [main/board.h](main/board.h):
+
+```c
+#define BOARD_RGB_LED_GPIO              38   /* DevKitC-1 v1.1 */
+#define BOARD_RGB_LED_GPIO_ALT          48   /* DevKitC-1 initiale Version */
+#define BOARD_RGB_LED_BRIGHTNESS        64   /* Rot/Blau, 0..255 */
+#define BOARD_RGB_LED_BRIGHTNESS_GREEN  32   /* Grün wirkt bei gleicher PWM heller */
+```
+
+Das Board existiert in zwei Revisionen, die die LED auf **GPIO38** (v1.1) bzw.
+**GPIO48** (initiale Version) führen. Beide Pins werden angesteuert, der Pin
+ohne LED bleibt wirkungslos – die Firmware passt damit auf beide Boards. Wer
+sicher weiß, welche Revision er hat, kann den anderen Pin auf `0` setzen und
+spart eine RMT-Einheit.
+
+Treiber: Komponente `espressif/led_strip` (WS2812 über RMT), eingetragen in
+[main/idf_component.yml](main/idf_component.yml) und wird beim ersten Build
+nach `managed_components/` geladen. Dort steht auch `espressif/mdns` für die
+Namensauflösung (siehe Abschnitt *Endpunkte*).
+
 ## WLAN einstellen
 
 `main/connect.h` enthält nur die **Vorgaben für den ersten Start** und ist in
@@ -107,6 +168,41 @@ Wichtig:
 | `/api`, `/api/values` | JSON (siehe unten) |
 | `/save` (nur im Konfigmodus) | Formular speichern, Gerät startet neu |
 
+### Aufruf über den Gerätenamen (mDNS)
+
+Das Gerät meldet sich per mDNS an, also **ohne** den DNS des Routers zu
+benötigen:
+
+```text
+http://aussenthermometer.local/
+http://aussenthermometer.local/api/values
+```
+
+Der Name wird aus dem Gerätenamen gebildet ([main/netcfg.c](main/netcfg.c),
+`netcfg_hostname()`): Kleinbuchstaben, Ziffern und Bindestriche; Umlaute werden
+ausgeschrieben, alles andere wird zum Bindestrich, doppelte und randständige
+Bindestriche entfallen:
+
+| Eingabe | Hostname |
+|---|---|
+| `Außenthermometer` | `aussenthermometer` |
+| `Test Gerät Küche` | `test-geraet-kueche` |
+| `Garten/West 2` | `garten-west-2` |
+| `---` oder leer | `thermometer` (Rückfallwert) |
+
+Derselbe Name wird als DHCP-Hostname gesetzt, erscheint also auch in der Liste
+der FRITZ!Box. Die Konfigurationsseite zeigt ihn unter dem Namensfeld an und
+aktualisiert ihn beim Tippen; die Seite nach dem Speichern nennt die neue
+Adresse ebenfalls. Der Dienst wird als `_http._tcp` angekündigt, damit das
+Gerät auch in Netzwerk-Scannern und in der Netzwerkansicht von Windows/macOS
+auftaucht. Im Konfigurationsmodus (Access Point) ist der Responder gestoppt,
+weil die Adresse zum Heimnetz gehört.
+
+Hinweis: `.local`-Namen brauchen mDNS auf dem Client. Windows 10/11, macOS,
+Linux mit Avahi und Android unterstützen das; manche Geräte (ältere Android-
+Versionen, Gäste-WLANs mit Client-Isolation) nicht – dort funktioniert weiter
+die IP-Adresse.
+
 Beispiel `curl http://192.168.123.123/api/values`:
 
 ```json
@@ -135,13 +231,15 @@ Beispiel `curl http://192.168.123.123/api/values`:
 |---|---|
 | [main/main.c](main/main.c) | Startablauf, Sensor-Task, NTP-Task, BOOT-Taster (3 s) |
 | [main/sensor.c](main/sensor.c) | SHT35-Treiber (I²C-Master, CRC-8), letzter Messwert im Cache |
+| [main/statusled.c](main/statusled.c) | Statusanzeige auf der RGB-LED (Blinkmuster, Pegelstufen) |
 | [main/webserver.c](main/webserver.c) | Endpunkte `/` und `/api/values` |
 | [main/configmode.c](main/configmode.c) | Konfigurations-AP, DNS-Responder, Formular, Speichern |
 | [main/wifi.c](main/wifi.c) | Station, Access Point, Netzwerkscan, Ereignisse |
 | [main/netcfg.c](main/netcfg.c) | Einstellungen in NVS, Hostname |
+| [main/discovery.c](main/discovery.c) | mDNS-Ankündigung `<name>.local` |
 | [main/clock.c](main/clock.c) | NTP und Zeitzone |
 | [main/textutil.c](main/textutil.c) | HTML-/JSON-Escaping |
-| [main/board.h](main/board.h) | Pins und I²C-Adresse |
+| [main/board.h](main/board.h) | Pins, I²C-Adresse, RGB-LED (GPIO, Helligkeit) |
 | [main/connect.example.h](main/connect.example.h) | Vorlage für die WLAN- und Geräte-Konfiguration |
 
 ## Fehlersuche
@@ -153,4 +251,6 @@ Beispiel `curl http://192.168.123.123/api/values`:
 | Kein WLAN-AP nach BOOT-Taste | Taster zu kurz gedrückt, oder beim **Einschalten** gedrückt (dann Download-Modus). Einmal normal neu starten. |
 | Konfigseite lädt nicht | `http://192.168.4.1/` vollständig eintippen (mit `http://`), nicht `https://`. |
 | Gerät startet unerwartet neu | Log beim Start nennt den Grund, z. B. `BROWNOUT (supply too weak)`. |
+| `<name>.local` wird nicht gefunden | mDNS am Client fehlt/deaktiviert (Gäste-WLAN, Client-Isolation), oder der Name ist anders als erwartet – er steht im Log (`discovery: announced as ...`) und auf der Konfigurationsseite. Alternativ die IP verwenden. |
+| RGB-LED bleibt dunkel | Firmware passt auf GPIO38 und GPIO48; leuchtet nichts, ist die LED-Helligkeit zu niedrig (`BOARD_RGB_LED_BRIGHTNESS`) oder die Board-Revision nutzt einen anderen Pin. |
 | Port belegt beim Flashen | Ein anderes Programm (Monitor, serielles Terminal) hält COM10. |

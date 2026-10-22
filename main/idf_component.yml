@@ -2,3 +2,10 @@
 ## The SHT35 driver is written in main/sensor.c, so only the IDF itself is needed.
 dependencies:
   idf: ">=6.0"
+
+  ## WS2812 driver for the on-board status LED (RMT backend)
+  espressif/led_strip: "^3.1.1"
+
+  ## mDNS responder: makes the unit reachable as <hostname>.local, independent
+  ## of the router's DNS
+  espressif/mdns: "^1.14.0"

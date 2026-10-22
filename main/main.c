@@ -3,10 +3,9 @@
  *
  * Startup:
  *   1. NVS + time zone + sensor (the sensor runs even without a network)
- *   2. BOOT held at reset -> configuration access point
- *   3. otherwise log into the stored network; when that fails, open the
- *      configuration access point instead
- *   4. when online: readings endpoint, then NTP in the background
+ *   2. log into the stored network; when that fails, open the configuration
+ *      access point instead (or when BOOT is held for 3 s while running)
+ *   3. when online: readings endpoint, then NTP in the background
  */
 
 #include <stdio.h>
@@ -24,8 +23,10 @@
 #include "clock.h"
 #include "configmode.h"
 #include "connect.h"
+#include "discovery.h"
 #include "netcfg.h"
 #include "sensor.h"
+#include "statusled.h"
 #include "webserver.h"
 #include "wifi.h"
 
@@ -143,7 +144,13 @@ void app_main(void)
     }
     clock_init();
 
-    if (sensor_init() != ESP_OK) {
+    /* The status LED comes up first: blinking green shows that the unit is
+     * running, and a red lamp reports a missing sensor right away. */
+    statusled_init();
+
+    const bool sensor_ok = sensor_init() == ESP_OK;
+    statusled_set_sensor_ok(sensor_ok);
+    if (!sensor_ok) {
         ESP_LOGW(TAG, "no sensor - the web page shows no values");
     }
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 4, NULL);
@@ -181,8 +188,13 @@ void app_main(void)
     }
 
     wifi_log_link();
+    statusled_set_wifi(STATUSLED_WIFI_CONNECTED);
     if (webserver_start() != ESP_OK) {
         ESP_LOGW(TAG, "the readings endpoint is not available");
+    }
+    /* announce <name>.local, so the unit is reachable without knowing the IP */
+    if (discovery_start() != ESP_OK) {
+        ESP_LOGW(TAG, "the unit is not announced via mDNS");
     }
     /* runs from now on: holding BOOT for 3 s switches to the configuration */
     xTaskCreate(config_button_task, "button", 3072, NULL, 2, NULL);

@@ -26,3 +26,16 @@
  * the unit runs opens the configuration access point; holding it during reset
  * enters the ROM download mode instead, so that path must not be used. */
 #define BOARD_BOOT_BUTTON_GPIO  0
+
+/* On-board addressable RGB LED (WS2812).  The DevKitC-1 exists in two
+ * revisions: v1.1 drives it on GPIO38, the initial version on GPIO48.  Both
+ * pins are driven, so the firmware fits either board; the pin that has no LED
+ * simply does nothing.  Set one of them to 0 to drive a single pin. */
+#define BOARD_RGB_LED_GPIO      38
+#define BOARD_RGB_LED_GPIO_ALT  48
+
+/* Duty cycle per colour channel (0..255).  Keep it low: a single WS2812 at
+ * full brightness is unpleasant in a dark room.  Green is set lower because
+ * the eye is much more sensitive to it than to red or blue. */
+#define BOARD_RGB_LED_BRIGHTNESS       64
+#define BOARD_RGB_LED_BRIGHTNESS_GREEN 24

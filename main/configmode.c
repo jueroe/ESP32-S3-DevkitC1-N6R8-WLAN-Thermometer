@@ -20,7 +20,9 @@
 #include "lwip/sockets.h"
 
 #include "connect.h"
+#include "discovery.h"
 #include "netcfg.h"
+#include "statusled.h"
 #include "textutil.h"
 #include "webserver.h"
 #include "wifi.h"
@@ -30,8 +32,8 @@ static const char *TAG = "configmode";
 /* Largest scan list shown in the form */
 #define CONFIG_SCAN_MAX 12
 
-/* Big enough for the page incl. the scan list */
-#define CONFIG_PAGE_MAX 4096
+/* Big enough for the page incl. the scan list and the script */
+#define CONFIG_PAGE_MAX 5120
 
 /* Longest accepted POST body (ssid + password + name, percent-encoded) */
 #define CONFIG_BODY_MAX 512
@@ -383,6 +385,10 @@ static esp_err_t handler_form(httpd_req_t *req)
     html_escape(cfg.name, name, sizeof(name));
     html_escape(cfg.ssid, ssid, sizeof(ssid));
 
+    /* the address the unit gets in the home network */
+    char hostname[33];
+    netcfg_hostname(hostname, sizeof(hostname));
+
     size_t used = 0;
     used = append(page, CONFIG_PAGE_MAX, used,
                   "%s"
@@ -410,16 +416,36 @@ static esp_err_t handler_form(httpd_req_t *req)
                   "placeholder=\"leer lassen = unveraendert\">"
                   "<label for=\"name\">Name des Ger&auml;ts</label>"
                   "<input id=\"name\" name=\"name\" value=\"%s\" maxlength=\"%d\">"
+                  "<p class=\"hint\">Im Heimnetz erreichbar als "
+                  "<code id=\"address\">http://%s.local/</code></p>"
                   "<button type=\"submit\">Speichern und neu starten</button>"
                   "</form>"
                   "<p class=\"hint\">Das Ger&auml;t meldet sich nach dem Neustart im Heimnetz an "
-                  "und ist dann unter <code>http://&lt;IP&gt;/</code> erreichbar.<br>"
+                  "und ist dann &uuml;ber den Namen oben oder die angezeigte IP erreichbar.<br>"
                   "Diese Seite jederzeit wieder: <code>http://192.168.4.1/</code> im Browser "
                   "&ouml;ffnen (das WLAN zeigt dabei kein Internet an - das ist normal).<br>"
                   "Zum erneuten &Ouml;ffnen dieser Seite den <b>BOOT</b>-Taster im laufenden "
                   "Betrieb 3 Sekunden gedr&uuml;ckt halten.</p>"
+                  /* Preview of the name that netcfg_hostname() builds from the
+                   * input; the device value stays authoritative. */
+                  "<script>"
+                  "const nameField=document.getElementById('name');"
+                  "const address=document.getElementById('address');"
+                  "const umlaut={'\\u00e4':'ae','\\u00f6':'oe','\\u00fc':'ue','\\u00df':'ss'};"
+                  "function hostname(text){"
+                  "let out='';"
+                  "for(const ch of text.toLowerCase()){"
+                  "out+=umlaut[ch]||(/[a-z0-9]/.test(ch)?ch:'-');"
+                  "}"
+                  "out=out.replace(/-+/g,'-').replace(/^-|-$/g,'');"
+                  "return out||'thermometer';"
+                  "}"
+                  "function update(){address.textContent='http://'+hostname(nameField.value)+'.local/';}"
+                  "nameField.addEventListener('input',update);"
+                  "update();"
+                  "</script>"
                   "</body></html>",
-                  NETCFG_PASSWORD_MAX, name, NETCFG_NAME_MAX);
+                  NETCFG_PASSWORD_MAX, name, NETCFG_NAME_MAX, hostname);
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -485,10 +511,18 @@ static esp_err_t handler_save(httpd_req_t *req)
     }
 
     ESP_LOGI(TAG, "settings stored, announcing the restart");
-    const esp_err_t sent = send_result(
-        req, "200 OK", "Gespeichert",
-        "Das Ger&auml;t startet jetzt neu und meldet sich im WLAN an. "
-        "Diese Seite kann geschlossen werden.");
+
+    /* netcfg_save() has already applied the new name, so this is the address
+     * the unit answers to after the restart */
+    char hostname[33];
+    netcfg_hostname(hostname, sizeof(hostname));
+    char text[320];
+    snprintf(text, sizeof(text),
+             "Das Ger&auml;t startet jetzt neu und meldet sich im WLAN an.<br>"
+             "Erreichbar als <code>http://%s.local/</code> oder &uuml;ber seine IP.",
+             hostname);
+
+    const esp_err_t sent = send_result(req, "200 OK", "Gespeichert", text);
     ESP_LOGI(TAG, "answer queued: %s", esp_err_to_name(sent));
 
     /* give the browser a moment to receive the answer */
@@ -547,6 +581,8 @@ esp_err_t configmode_start(void)
 
     /* both servers listen on port 80 */
     webserver_stop();
+    /* the announced address belongs to the home network, not to the AP */
+    discovery_stop();
 
     if (wifi_init() != ESP_OK) {
         ESP_LOGE(TAG, "the WiFi driver did not come up");
@@ -634,6 +670,8 @@ esp_err_t configmode_start(void)
 
     /* the list is filled in the background; the first page shows what is there */
     xTaskCreate(scan_task, "scan", 4096, NULL, 3, NULL);
+
+    statusled_set_wifi(STATUSLED_WIFI_AP);
 
     ESP_LOGI(TAG, "configuration access point \"%s\" (%s) - open http://%s/", ap_ssid,
              strlen(CONNECT_AP_PASSWORD) >= 8 ? "WPA2" : "open", ip);

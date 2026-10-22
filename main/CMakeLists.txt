@@ -4,6 +4,8 @@ idf_component_register(
         "wifi.c"
         "netcfg.c"
         "sensor.c"
+        "statusled.c"
+        "discovery.c"
         "clock.c"
         "textutil.c"
         "webserver.c"
@@ -12,6 +14,7 @@ idf_component_register(
     REQUIRES
         esp_driver_gpio
         esp_driver_i2c
+        esp_driver_rmt
         esp_event
         esp_http_server
         esp_netif
@@ -19,4 +22,6 @@ idf_component_register(
         esp_wifi
         lwip
         nvs_flash
+        espressif__led_strip
+        mdns
 )
