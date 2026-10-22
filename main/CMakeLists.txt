@@ -6,6 +6,7 @@ idf_component_register(
         "sensor.c"
         "statusled.c"
         "discovery.c"
+        "watchdog.c"
         "clock.c"
         "textutil.c"
         "webserver.c"
@@ -18,6 +19,7 @@ idf_component_register(
         esp_event
         esp_http_server
         esp_netif
+        esp_system
         esp_timer
         esp_wifi
         lwip

@@ -164,12 +164,8 @@ bool sensor_is_available(void)
     return s_available;
 }
 
-esp_err_t sensor_read(sensor_reading_t *reading)
+static esp_err_t read_once(sensor_reading_t *reading)
 {
-    if (!s_available || reading == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
     const uint8_t command[2] = {
         (uint8_t)(SHT35_CMD_SINGLE_SHOT_HIGH >> 8),
         (uint8_t)(SHT35_CMD_SINGLE_SHOT_HIGH & 0xFF),
@@ -203,6 +199,27 @@ esp_err_t sensor_read(sensor_reading_t *reading)
         reading->humidity_rh = 0.0f;
     } else if (reading->humidity_rh > 100.0f) {
         reading->humidity_rh = 100.0f;
+    }
+    return ESP_OK;
+}
+
+esp_err_t sensor_read(sensor_reading_t *reading)
+{
+    if (!s_available || reading == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = read_once(reading);
+    if (err != ESP_OK) {
+        /* The sensor hangs on a long cable outside; a single disturbed transfer
+         * should not count as a failed reading (main.c reports a defect after
+         * three in a row). */
+        ESP_LOGD(TAG, "retrying after %s", esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(10));
+        err = read_once(reading);
+    }
+    if (err != ESP_OK) {
+        return err;
     }
 
     if (s_last_lock != NULL) {

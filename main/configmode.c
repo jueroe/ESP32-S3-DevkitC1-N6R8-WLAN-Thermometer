@@ -24,6 +24,7 @@
 #include "netcfg.h"
 #include "statusled.h"
 #include "textutil.h"
+#include "watchdog.h"
 #include "webserver.h"
 #include "wifi.h"
 
@@ -165,6 +166,8 @@ static void scan_task(void *argument)
 {
     (void)argument;
 
+    watchdog_subscribe();
+
     for (;;) {
         wifi_ap_info_t list[CONFIG_SCAN_MAX];
         const int count = wifi_scan_networks(list, CONFIG_SCAN_MAX);
@@ -174,6 +177,7 @@ static void scan_task(void *argument)
         s_network_count = count;
         xSemaphoreGive(s_scan_lock);
 
+        watchdog_feed();
         vTaskDelay(pdMS_TO_TICKS(CONFIG_SCAN_INTERVAL_MS));
     }
 }

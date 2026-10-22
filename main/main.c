@@ -27,6 +27,7 @@
 #include "netcfg.h"
 #include "sensor.h"
 #include "statusled.h"
+#include "watchdog.h"
 #include "webserver.h"
 #include "wifi.h"
 
@@ -36,15 +37,36 @@ static const char *TAG = "app";
  * measurement per 10 s keeps the cached value fresh. */
 #define SENSOR_INTERVAL_MS 10000
 
+/* Consecutive failed readings before the red LED reports the sensor as lost;
+ * a single CRC error or a disturbed transfer is not a defect. */
+#define SENSOR_FAILURES_FOR_ALARM 3
+
 static void sensor_task(void *argument)
 {
     (void)argument;
 
+    watchdog_subscribe();
+
+    int failures = 0;
     for (;;) {
         sensor_reading_t reading;
         if (sensor_read(&reading) == ESP_OK) {
+            if (failures >= SENSOR_FAILURES_FOR_ALARM) {
+                ESP_LOGI(TAG, "sensor answers again");
+                statusled_set_sensor_ok(true);
+            }
+            failures = 0;
             ESP_LOGI(TAG, "%.2f C, %.1f %%rH", reading.temperature_c, reading.humidity_rh);
+        } else if (sensor_is_available() && failures < SENSOR_FAILURES_FOR_ALARM) {
+            failures++;
+            if (failures == SENSOR_FAILURES_FOR_ALARM) {
+                ESP_LOGW(TAG, "%d readings in a row failed - sensor lamp on",
+                         SENSOR_FAILURES_FOR_ALARM);
+                statusled_set_sensor_ok(false);
+            }
         }
+
+        watchdog_feed();
         vTaskDelay(pdMS_TO_TICKS(SENSOR_INTERVAL_MS));
     }
 }
@@ -92,6 +114,8 @@ static void config_button_task(void *argument)
     };
     gpio_config(&config);
 
+    watchdog_subscribe();
+
     int held_ms = 0;
     bool announced = false;
     for (;;) {
@@ -107,12 +131,14 @@ static void config_button_task(void *argument)
                 if (configmode_start() != ESP_OK) {
                     ESP_LOGE(TAG, "the configuration is not available");
                 }
+                watchdog_unsubscribe();
                 vTaskDelete(NULL);
             }
         } else {
             held_ms = 0;
             announced = false;
         }
+        watchdog_feed();
         vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_MS));
     }
 }
@@ -138,6 +164,8 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "outdoor thermometer starting (reset: %s)",
              reset_reason_text(esp_reset_reason()));
+
+    watchdog_init();
 
     if (netcfg_init() != ESP_OK) {
         ESP_LOGE(TAG, "NVS is not available, settings cannot be stored");

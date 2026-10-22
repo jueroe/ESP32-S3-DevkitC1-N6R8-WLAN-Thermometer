@@ -18,7 +18,8 @@ Konfigurationsseite.
 - Im Heimnetz per Namen erreichbar: `http://<name>.local/` (mDNS), unabhängig
   vom DNS des Routers
 - Konfigurations-AP mit Netzwerkscan und Formular
-- Reset-Grund wird beim Start geloggt (z. B. `power on`, `BROWNOUT`)
+- Reset-Grund wird beim Start geloggt (z. B. `power on`, `BROWNOUT`,
+  `task watchdog`)
 
 ## Hardware
 
@@ -31,7 +32,16 @@ Konfigurationsseite.
 | SHT35 ADDR | GND (Adresse 0x44) |
 
 Externe 4,7 kΩ-Pull-ups von SDA und SCL nach 3V3 sind bestückt; die internen
-Pull-ups sind zusätzlich aktiv. Der Bustakt liegt bei 100 kHz.
+Pull-ups sind zusätzlich aktiv. Der Bustakt liegt bei **50 kHz**, weil der Fühler
+über eine **1,5 m lange Leitung** nach draußen geführt wird: Die Kabellänge
+erhöht die Buskapazität, mit 4k7 kommt man bei 100 kHz auf etwa 0,7 µs
+Flankenzeit (I²C-Grenze 1 µs) – bei 50 kHz bleibt Reserve. Eine gestörte
+Übertragung wird einmal wiederholt, bevor sie als Fehlmessung zählt.
+
+I²C über längere Strecken: ab etwa 1 m Leitung wirken sich Kapazität und
+Einstreuungen aus. Bewährt haben sich verdrillte Adern mit GND, kürzere
+Leitungen, kleinere Pull-ups (2k2) und ein niedrigerer Takt. Der Wert steht in
+[main/board.h](main/board.h) als `BOARD_I2C_FREQ_HZ`.
 
 GPIO4/GPIO5 liegen auf der linken Kopfleiste (J1), also der Reihe mit 3V3 oben
 und GND unten. Nicht verwenden: GPIO0 (BOOT), 3/46 (Strapping), 19/20 (USB),
@@ -83,7 +93,14 @@ hintereinander, danach eine Pause.
 | Zustand | Anzeige |
 |---|---|
 | SHT35 beim Start nicht gefunden (I²C-Fehler) | leuchtet dauerhaft |
+| Drei Messungen hintereinander fehlgeschlagen (I²C-Fehler, CRC-Fehler, Sensor abgezogen) | leuchtet dauerhaft |
+| Sensor liefert wieder einen gültigen Wert | geht aus |
 | Sensor in Ordnung | aus |
+
+Ein einzelner Fehlversuch (z. B. eine gestörte Übertragung) schaltet die LED
+nicht ein – erst drei Fehlversuche in Folge (bei 10 s Messabstand also nach etwa
+30 s) gelten als Ausfall. Der letzte gültige Messwert bleibt in dieser Zeit auf
+der Webseite sichtbar, sein Alter wächst in `age_s` mit.
 
 ### Blau – Feldstärke
 
@@ -121,6 +138,38 @@ Treiber: Komponente `espressif/led_strip` (WS2812 über RMT), eingetragen in
 [main/idf_component.yml](main/idf_component.yml) und wird beim ersten Build
 nach `managed_components/` geladen. Dort steht auch `espressif/mdns` für die
 Namensauflösung (siehe Abschnitt *Endpunkte*).
+
+## Watchdog
+
+Damit sich das Gerät nach einem Hänger selbst erholt, ist der ESP-IDF-Task-
+Watchdog aktiv ([main/watchdog.c](main/watchdog.c)):
+
+| Einstellung | Wert |
+|---|---|
+| Timeout | 60 s |
+| Reaktion | Panic und Neustart |
+| Überwachte Tasks | Sensor, Status-LED, BOOT-Taster, Netzwerkscan (Konfigmodus) |
+| Idle-Tasks | nicht überwacht (lange Flash-/Löschvorgänge sollen nicht auslösen) |
+
+Jeder dieser Tasks meldet sich in seiner Schleife an (`watchdog_subscribe()`)
+und ruft pro Durchlauf `watchdog_feed()` auf. Bleibt ein Feed aus – etwa weil
+der I²C-Treiber hängt oder ein Deadlock auf einer Sperre –, startet das Gerät
+nach 60 s neu. Der Grund steht anschließend im Log:
+
+```text
+E (60955) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+E (60955) task_wdt:  - sensor (CPU 1)
+E (60955) task_wdt: Aborting.
+...
+I (870) app: outdoor thermometer starting (reset: task watchdog)
+```
+
+Der Timeout ist bewusst großzügig: Der Sensor-Task schläft 10 s zwischen zwei
+Messungen, der Netzwerkscan braucht ein paar Sekunden.
+
+Nicht überwacht sind die Tasks des HTTP-Servers und der mDNS-Komponente – sie
+gehören der ESP-IDF und legen keine Task-Handles offen. Ein Hänger dort würde
+durch fehlende HTTP-Antworten auffallen, nicht durch einen Neustart.
 
 ## WLAN einstellen
 
@@ -232,6 +281,7 @@ Beispiel `curl http://192.168.123.123/api/values`:
 | [main/main.c](main/main.c) | Startablauf, Sensor-Task, NTP-Task, BOOT-Taster (3 s) |
 | [main/sensor.c](main/sensor.c) | SHT35-Treiber (I²C-Master, CRC-8), letzter Messwert im Cache |
 | [main/statusled.c](main/statusled.c) | Statusanzeige auf der RGB-LED (Blinkmuster, Pegelstufen) |
+| [main/watchdog.c](main/watchdog.c) | Task-Watchdog: Timeout, An-/Abmeldung, Panic bei Hänger |
 | [main/webserver.c](main/webserver.c) | Endpunkte `/` und `/api/values` |
 | [main/configmode.c](main/configmode.c) | Konfigurations-AP, DNS-Responder, Formular, Speichern |
 | [main/wifi.c](main/wifi.c) | Station, Access Point, Netzwerkscan, Ereignisse |
@@ -250,7 +300,8 @@ Beispiel `curl http://192.168.123.123/api/values`:
 | `I2C devices found: 0x45 …` | ADDR liegt an VDD: `BOARD_SHT35_ADDRESS` auf `0x45` setzen. |
 | Kein WLAN-AP nach BOOT-Taste | Taster zu kurz gedrückt, oder beim **Einschalten** gedrückt (dann Download-Modus). Einmal normal neu starten. |
 | Konfigseite lädt nicht | `http://192.168.4.1/` vollständig eintippen (mit `http://`), nicht `https://`. |
-| Gerät startet unerwartet neu | Log beim Start nennt den Grund, z. B. `BROWNOUT (supply too weak)`. |
+| Gerät startet unerwartet neu | Log beim Start nennt den Grund, z. B. `BROWNOUT (supply too weak)`. Bei `task watchdog` stand vorher im Log, welcher Task nicht mehr reagiert hat. |
 | `<name>.local` wird nicht gefunden | mDNS am Client fehlt/deaktiviert (Gäste-WLAN, Client-Isolation), oder der Name ist anders als erwartet – er steht im Log (`discovery: announced as ...`) und auf der Konfigurationsseite. Alternativ die IP verwenden. |
+| WLAN-Reichweite bricht ein (RSSI deutlich schlechter und schwankend) | Antennenstecker sitzt nicht oder ist beschädigt: U.FL/IPEX gerade andrücken, Kabel nicht knicken. U.FL ist nur für wenige Steckzyklen ausgelegt, schräges Aufdrücken verbiegt den Mittelstift der Buchse. Bei WROOM-1U-Modulen gibt es keine PCB-Antenne – ohne intaktes Kabel bleibt nur Leckstrahlung (Verbindung bricht dann ganz weg). Bei -67 dBm blinkt die blaue LED einmal. |
 | RGB-LED bleibt dunkel | Firmware passt auf GPIO38 und GPIO48; leuchtet nichts, ist die LED-Helligkeit zu niedrig (`BOARD_RGB_LED_BRIGHTNESS`) oder die Board-Revision nutzt einen anderen Pin. |
 | Port belegt beim Flashen | Ein anderes Programm (Monitor, serielles Terminal) hält COM10. |

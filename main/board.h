@@ -17,7 +17,11 @@
 #define BOARD_I2C_PORT          0
 #define BOARD_I2C_SDA_GPIO      4
 #define BOARD_I2C_SCL_GPIO      5
-#define BOARD_I2C_FREQ_HZ       100000 /* SHT35 allows up to 1 MHz */
+/* 50 kHz instead of the 100 kHz the SHT35 could do: the sensor sits outside on
+ * a 1.5 m cable, which raises the bus capacitance.  With 4k7 pull-ups that
+ * leaves the rise time at about 0.7 us - safely below the 1 us limit.  A
+ * transfer of six bytes takes well under a millisecond either way. */
+#define BOARD_I2C_FREQ_HZ       50000
 
 /* 0x44 with ADDR tied to GND (default on most breakouts), 0x45 with ADDR to VDD */
 #define BOARD_SHT35_ADDRESS     0x44

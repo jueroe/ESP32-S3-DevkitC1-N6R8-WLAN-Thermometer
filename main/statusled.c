@@ -11,6 +11,7 @@
 #include "led_strip.h"
 
 #include "board.h"
+#include "watchdog.h"
 #include "wifi.h"
 
 static const char *TAG = "statusled";
@@ -79,6 +80,8 @@ static void statusled_task(void *argument)
 {
     (void)argument;
 
+    watchdog_subscribe();
+
     const int64_t start_us = esp_timer_get_time();
     uint32_t elapsed_ms = 0;
     uint32_t last_poll_ms = 0;
@@ -119,6 +122,7 @@ static void statusled_task(void *argument)
         }
 
         vTaskDelay(pdMS_TO_TICKS(LED_TICK_MS));
+        watchdog_feed();
         elapsed_ms = (uint32_t)((esp_timer_get_time() - start_us) / 1000);
     }
 }
