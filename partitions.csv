@@ -1,0 +1,15 @@
+# Partition table for the ESP32-S3-DevKitC-1 N16R8 (16 MB flash)
+#
+#   0x000000  bootloader        (written by the bootloader, not part of this file)
+#   0x008000  partition table   (this file)
+#   0x009000  nvs                24 KB  WiFi data, netcfg settings
+#   0x00F000  phy_init            4 KB  RF calibration data
+#   0x010000  factory app         4 MB  application
+#
+# No OTA slot: the unit is updated over USB, and a single 4 MB slot leaves
+# plenty of room for the debug build.
+#
+# Name,     Type, SubType, Offset,  Size,     Flags
+nvs,        data, nvs,     0x9000,  0x6000,
+phy_init,   data, phy,     0xF000,  0x1000,
+factory,    app,  factory, 0x10000, 0x400000,

@@ -1,0 +1,40 @@
+# ESP32-S3-DevKitC-1 N16R8 (16 MB flash, 8 MB octal PSRAM)
+# These values are applied when sdkconfig is created (idf.py set-target / build).
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- Flash -----------------------------------------------------------------
+# The N16R8 module carries 16 MB of flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# --- PSRAM -----------------------------------------------------------------
+# 8 MB octal PSRAM.  Not strictly needed by the application, but it is on the
+# module and stays disabled only if these lines are removed.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# --- CPU -------------------------------------------------------------------
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# --- Partition table -------------------------------------------------------
+# A 4 MB application slot (see partitions.csv) instead of the 1 MB default,
+# so debug builds with -Og still fit.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# --- WiFi ------------------------------------------------------------------
+# The access point is required: without it the unit cannot be configured
+# (see main/configmode.c).  WPA3-Enterprise and WPS are not used and save RAM.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+
+# WiFi code in flash instead of IRAM frees internal RAM for the heap.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n

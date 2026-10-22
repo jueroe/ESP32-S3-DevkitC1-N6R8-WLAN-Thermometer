@@ -1,0 +1,4 @@
+## Managed components are downloaded into managed_components/ on the first build.
+## The SHT35 driver is written in main/sensor.c, so only the IDF itself is needed.
+dependencies:
+  idf: ">=6.0"

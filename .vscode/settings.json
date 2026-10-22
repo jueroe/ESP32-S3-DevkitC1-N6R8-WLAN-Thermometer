@@ -1,0 +1,18 @@
+{
+  "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf",
+  "idf.port": "COM10",
+  "idf.flashType": "UART",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32s3"
+  },
+  "idf.enableCCache": true,
+  "idf.saveBeforeBuild": true,
+  "C_Cpp.intelliSenseEngine": "default",
+  "cmake.configureOnOpen": false,
+  "cmake.configureOnEdit": false,
+  "cmake.automaticReconfigure": false,
+  "cmake.autoSelectActiveFolder": false
+}
