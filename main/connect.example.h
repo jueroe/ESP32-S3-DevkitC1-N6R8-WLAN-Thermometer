@@ -15,8 +15,9 @@
 #define CONNECT_DEVICE_NAME     "Außenthermometer"
 #define CONNECT_WIFI_TIMEOUT_MS 20000
 
-/* Skip the connection attempt when the network is weaker than this, and open
- * the configuration access point instead */
+/* Weakest signal accepted for the stored network.  Only used for a warning in
+ * the log: the unit always tries to connect, so that a device mounted at the
+ * edge of the range does not stay in the configuration mode. */
 #define CONNECT_MIN_RSSI        (-85)
 
 /* Access point of the unit for the WLAN configuration (password needs at

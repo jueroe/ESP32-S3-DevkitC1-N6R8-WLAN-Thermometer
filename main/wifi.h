@@ -27,6 +27,15 @@ typedef struct {
 /* Signal strength value used when an SSID is not in the scan result */
 #define WIFI_RSSI_NOT_FOUND (-127)
 
+/* One access point from a scan, without merging equal names: a mesh shows up
+ * as several entries with the same SSID and a different BSSID. */
+typedef struct {
+    char ssid[33];
+    uint8_t bssid[6];
+    int8_t rssi;
+    uint8_t channel;
+} wifi_bss_t;
+
 /** Bring up NVS-backed WiFi in station mode, register the handlers.  Idempotent. */
 esp_err_t wifi_init(void);
 
@@ -39,6 +48,23 @@ esp_err_t wifi_init(void);
  * @return true when the device has an IP address
  */
 bool wifi_connect(const char *ssid, const char *password, uint32_t timeout_ms);
+
+/**
+ * Like wifi_connect(), but tied to one access point of a mesh.
+ *
+ * With `bssid` the driver is told which of several access points that share the
+ * name to use - it does not always pick the strongest by itself.  When that
+ * access point stops answering, the pin is dropped and the driver chooses
+ * again.  `bssid` NULL behaves like wifi_connect().
+ */
+bool wifi_connect_bssid(const char *ssid, const char *password, const uint8_t *bssid,
+                        uint32_t timeout_ms);
+
+/**
+ * Scan and copy all access points into `out`, keeping several entries with the
+ * same name (one per BSSID).  Returns the number of entries written.
+ */
+int wifi_scan_all(wifi_bss_t *out, int max);
 
 /** Stop the automatic reconnect logic (used before the access point starts). */
 void wifi_stop_sta(void);
@@ -69,6 +95,18 @@ const char *wifi_ip_address(void);
 
 /** Signal strength of the current link in dBm, 0 while not connected. */
 int wifi_rssi(void);
+
+/**
+ * Details of the current link, for the JSON endpoint and the log: name and
+ * address of the access point the unit is associated with.  In a mesh several
+ * access points share one name, so the BSSID tells which one is in use.
+ *
+ * @param ssid    receives the network name, may be NULL
+ * @param bssid   receives "aa:bb:cc:dd:ee:ff", may be NULL
+ * @param channel receives the channel, may be NULL
+ * @return false while not connected
+ */
+bool wifi_link_info(char *ssid, size_t ssid_size, char *bssid, size_t bssid_size, int *channel);
 
 /** Log access point name, channel, signal strength and IP address. */
 void wifi_log_link(void);

@@ -15,6 +15,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
@@ -44,11 +45,19 @@ static const char *TAG = "configmode";
  * quickly and fall back to mobile data when the Wi-Fi has no internet). */
 #define CONFIG_SCAN_INTERVAL_MS 20000
 
+/* Safety net for a unit that is already mounted: when nobody configured it for
+ * this long, it restarts and tries the stored network again - otherwise a boot
+ * without coverage would leave it in the access point for good. */
+#define CONFIG_IDLE_RESTART_MS (15 * 60 * 1000)
+
 static httpd_handle_t s_server;
 
 static SemaphoreHandle_t s_scan_lock;
 static wifi_ap_info_t s_networks[CONFIG_SCAN_MAX];
 static int s_network_count;
+
+/* Time of the last client activity, used by the idle restart */
+static volatile int64_t s_last_activity_us;
 
 static const char *CONFIG_PAGE_HEAD =
     "<!DOCTYPE html><html lang=\"de\"><head><meta charset=\"utf-8\">"
@@ -344,6 +353,32 @@ static void ap_event_handler(void *argument, esp_event_base_t base, int32_t id, 
         ESP_LOGI(TAG, "client %02x:%02x:%02x:%02x:%02x:%02x disconnected",
                  event->mac[0], event->mac[1], event->mac[2], event->mac[3], event->mac[4],
                  event->mac[5]);
+    } else {
+        return;
+    }
+    s_last_activity_us = esp_timer_get_time();
+}
+
+/* Restart after a long time without a client, so an already mounted unit falls
+ * back to its stored network instead of waiting in the access point forever. */
+static void idle_task(void *argument)
+{
+    (void)argument;
+
+    watchdog_subscribe();
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(30000));
+        watchdog_feed();
+
+        const int64_t idle_us = esp_timer_get_time() - s_last_activity_us;
+        if (idle_us < (int64_t)CONFIG_IDLE_RESTART_MS * 1000) {
+            continue;
+        }
+        ESP_LOGW(TAG, "%d minutes without a configuration - restarting to try the stored network",
+                 CONFIG_IDLE_RESTART_MS / 60000);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
     }
 }
 
@@ -674,6 +709,9 @@ esp_err_t configmode_start(void)
 
     /* the list is filled in the background; the first page shows what is there */
     xTaskCreate(scan_task, "scan", 4096, NULL, 3, NULL);
+
+    s_last_activity_us = esp_timer_get_time();
+    xTaskCreate(idle_task, "configidle", 3072, NULL, 2, NULL);
 
     statusled_set_wifi(STATUSLED_WIFI_AP);
 

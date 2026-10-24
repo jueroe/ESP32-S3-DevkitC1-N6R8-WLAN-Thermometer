@@ -19,6 +19,7 @@
 static const char *TAG = "webserver";
 
 static httpd_handle_t s_server;
+static httpd_handle_t s_public_server;
 
 /* value * 10 to an integer, rounded */
 static int tenths(float value)
@@ -84,12 +85,21 @@ static esp_err_t handler_values(httpd_req_t *req)
     char name[NETCFG_NAME_MAX * 2 + 1];
     json_escape(netcfg_device_name(), name, sizeof(name));
 
-    char json[384];
+    /* the access point in use - in a mesh several share the SSID */
+    char ssid[33] = "-";
+    char bssid[18] = "-";
+    int channel = 0;
+    if (!wifi_link_info(ssid, sizeof(ssid), bssid, sizeof(bssid), &channel)) {
+        channel = 0;
+    }
+
+    char json[512];
     snprintf(json, sizeof(json),
              "{\"name\":\"%s\",\"valid\":%s,\"temperature_c\":%s,\"humidity_rh\":%s,"
-             "\"age_s\":%ld,\"time\":\"%s\",\"ip\":\"%s\",\"rssi_dbm\":%d,\"uptime_s\":%ld}",
+             "\"age_s\":%ld,\"time\":\"%s\",\"ip\":\"%s\",\"rssi_dbm\":%d,\"uptime_s\":%ld,"
+             "\"ssid\":\"%s\",\"bssid\":\"%s\",\"channel\":%d}",
              name, valid ? "true" : "false", temperature, humidity, age_s, stamp,
-             wifi_ip_address(), wifi_rssi(), uptime_seconds());
+             wifi_ip_address(), wifi_rssi(), uptime_seconds(), ssid, bssid, channel);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -113,6 +123,11 @@ static const char *PAGE_HEAD =
 
 static esp_err_t handler_index(httpd_req_t *req)
 {
+    /* user_ctx != NULL marks the server that is reachable from outside: there
+     * the link to the JSON endpoint is left out, because that endpoint does not
+     * exist on that port */
+    const bool public_view = req->user_ctx != NULL;
+
     sensor_reading_t reading;
     int64_t age_ms = 0;
     const bool valid = sensor_last(&reading, &age_ms);
@@ -138,10 +153,11 @@ static esp_err_t handler_index(httpd_req_t *req)
              "<p class=\"small\">%s %%rF</p>"
              "<p class=\"small\">%s</p>"
              "<p class=\"hint\">%s, %d dBm, %s</p>"
-             "<p class=\"hint\">JSON: <code>/api/values</code></p>"
+             "%s"
              "</body></html>",
              PAGE_HEAD, title, temperature, humidity, stamp, wifi_ip_address(), wifi_rssi(),
-             valid ? "Sensor bereit" : "noch kein Messwert");
+             valid ? "Sensor bereit" : "noch kein Messwert",
+             public_view ? "" : "<p class=\"hint\">JSON: <code>/api/values</code></p>");
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -186,11 +202,54 @@ esp_err_t webserver_start(void)
     ESP_LOGI(TAG, "heap: %d bytes free, largest block %d bytes",
              (int)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
              (int)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+
+#if WEBSERVER_PUBLIC_PORT > 0
+    /* Second server for the view from outside.  It only knows the page, so a
+     * port forward to this port cannot reach the JSON endpoint at all - the
+     * handler does not exist there.  A forward from outside to port 8080 is
+     * therefore safe without a password, and the unused API path answers 404. */
+    httpd_config_t public_config = HTTPD_DEFAULT_CONFIG();
+    public_config.server_port = WEBSERVER_PUBLIC_PORT;
+    public_config.ctrl_port = public_config.ctrl_port + 1; /* the default is used by port 80 */
+    public_config.stack_size = 4096;
+    public_config.max_open_sockets = 2;
+    public_config.lru_purge_enable = true;
+
+    esp_err_t public_err = httpd_start(&s_public_server, &public_config);
+    if (public_err != ESP_OK) {
+        ESP_LOGW(TAG, "the public page on port %d is not available: %s", WEBSERVER_PUBLIC_PORT,
+                 esp_err_to_name(public_err));
+        s_public_server = NULL;
+        return ESP_OK; /* the readings on the internal port keep working */
+    }
+
+    const httpd_uri_t public_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = handler_index,
+        .user_ctx = (void *)1, /* page only, no link to the API */
+    };
+    public_err = httpd_register_uri_handler(s_public_server, &public_uri);
+    if (public_err != ESP_OK) {
+        ESP_LOGW(TAG, "cannot register the page on port %d: %s", WEBSERVER_PUBLIC_PORT,
+                 esp_err_to_name(public_err));
+    }
+
+    ESP_LOGI(TAG, "page for outside at http://%s:%d/ (no JSON there)", wifi_ip_address(),
+             WEBSERVER_PUBLIC_PORT);
+#endif
     return ESP_OK;
 }
 
 void webserver_stop(void)
 {
+#if WEBSERVER_PUBLIC_PORT > 0
+    if (s_public_server != NULL) {
+        httpd_stop(s_public_server);
+        s_public_server = NULL;
+        ESP_LOGI(TAG, "page on port %d stopped", WEBSERVER_PUBLIC_PORT);
+    }
+#endif
     if (s_server == NULL) {
         return;
     }

@@ -192,17 +192,40 @@ void app_main(void)
     if (wifi_init() != ESP_OK) {
         ESP_LOGE(TAG, "the WiFi driver did not come up");
     } else {
-        /* Look for the network first: when it is not there, the connection
-         * attempt would only cost the full timeout before the configuration
-         * starts. */
-        const int rssi = wifi_scan_rssi(cfg.ssid);
-        if (rssi == WIFI_RSSI_NOT_FOUND) {
-            ESP_LOGW(TAG, "\"%s\" is not in the scan result", cfg.ssid);
-        } else if (rssi < CONNECT_MIN_RSSI) {
-            ESP_LOGW(TAG, "\"%s\" is too weak: %d dBm, at least %d dBm needed", cfg.ssid, rssi,
-                     CONNECT_MIN_RSSI);
+        /* Every access point of the network is logged with its own strength: a
+         * mesh runs several with the same name, and the driver does not always
+         * pick the strongest.  The best one is then used explicitly. */
+        wifi_bss_t access_points[16];
+        const int found = wifi_scan_all(access_points, 16);
+        const uint8_t *best_bssid = NULL;
+        int best_rssi = WIFI_RSSI_NOT_FOUND;
+
+        for (int i = 0; i < found; i++) {
+            const wifi_bss_t *ap = &access_points[i];
+            ESP_LOGI(TAG, "scan: \"%s\" %02x:%02x:%02x:%02x:%02x:%02x channel %d, %d dBm", ap->ssid,
+                     ap->bssid[0], ap->bssid[1], ap->bssid[2], ap->bssid[3], ap->bssid[4],
+                     ap->bssid[5], ap->channel, ap->rssi);
+            if (strcmp(ap->ssid, cfg.ssid) == 0 && ap->rssi > best_rssi) {
+                best_rssi = ap->rssi;
+                best_bssid = ap->bssid;
+            }
+        }
+
+        if (best_bssid == NULL) {
+            ESP_LOGW(TAG, "\"%s\" is not in the scan result - trying anyway", cfg.ssid);
+        } else if (best_rssi < CONNECT_MIN_RSSI) {
+            ESP_LOGW(TAG, "\"%s\" is weak (%d dBm, expected at least %d dBm) - trying anyway",
+                     cfg.ssid, best_rssi, CONNECT_MIN_RSSI);
         } else {
-            ESP_LOGI(TAG, "\"%s\" found with %d dBm", cfg.ssid, rssi);
+            ESP_LOGI(TAG, "\"%s\" strongest at %d dBm", cfg.ssid, best_rssi);
+        }
+
+        if (best_bssid != NULL) {
+            ESP_LOGI(TAG, "using the strongest access point of \"%s\"", cfg.ssid);
+            connected = wifi_connect_bssid(cfg.ssid, cfg.password, best_bssid,
+                                          CONNECT_WIFI_TIMEOUT_MS);
+        }
+        if (!connected) {
             connected = wifi_connect(cfg.ssid, cfg.password, CONNECT_WIFI_TIMEOUT_MS);
         }
     }

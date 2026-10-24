@@ -74,6 +74,22 @@ Board-Einstellungen stehen in [sdkconfig.defaults](sdkconfig.defaults)
 (16 MB Flash, 8 MB Octal-PSRAM, 240 MHz) und
 [partitions.csv](partitions.csv) (4 MB Applikation, keine OTA-Slots).
 
+### Flashen ohne Internet (z. B. direkt am Montageort)
+
+Für ein Gerät, das schon montiert ist, gibt es ein Skript, das flasht, den
+Kaltstart protokolliert und das Ergebnis im Klartext ausgibt – ohne
+Internetverbindung, weil ESP-IDF und Toolchain lokal liegen:
+
+```text
+tools\flash-und-pruefen.cmd            Port wird automatisch gesucht
+tools\flash-und-pruefen.cmd COM11      Port vorgeben
+```
+
+Es prüft nach dem Neustart, ob Sensor, Watchdog und WLAN arbeiten, nennt
+gefundenen Pegel, IP und `.local`-Namen und schreibt das vollständige Protokoll
+nach `garage-flash.log`. Sinnvoll, wenn das Gerät an einer Stelle mit schwachem
+Empfang montiert wird: So sieht man sofort, ob es sich dort verbindet.
+
 ## Statusanzeige (RGB-LED)
 
 Die adressierbare WS2812 auf dem DevKitC-1 zeigt den Betriebszustand. Alle
@@ -180,9 +196,24 @@ Repository landet. Vorlage: [main/connect.example.h](main/connect.example.h).
 Sobald auf der Konfigurationsseite gespeichert wurde, gelten die Werte aus dem
 NVS-Speicher. Ein Wechsel des Netzes braucht dann keinen Neubau.
 
+Beim Start scannt das Gerät alle Zugangspunkte und **verbindet sich mit dem
+stärksten BSSID** seiner SSID ([main/main.c](main/main.c),
+`wifi_connect_bssid()`). In einem Mesh teilen sich mehrere Geräte den Namen, und
+der WLAN-Treiber wählt nicht zuverlässig den besten – auf einer Garagewand waren
+das gemessene **20 dB** Unterschied (−82 dBm am Repeater gegenüber −62 dBm am
+Router). Antwortet der gewählte Knoten später nicht mehr, wird die Bindung
+gelöst und der Treiber entscheidet wieder frei.
+
+`CONNECT_MIN_RSSI` (Standard −85 dBm) dient nur als Warnschwelle im Log: Ein
+Gerät, das am Rand der Reichweite montiert ist, darf nicht allein wegen einer
+schwachen Scan-Messung im Konfigurationsmodus landen. Erst wenn der
+Verbindungsversuch wirklich scheitert, öffnet sich der Access Point – und auch
+der beendet sich nach 15 Minuten ohne Client von selbst (siehe
+*Konfigurationsmodus*).
+
 ## Konfigurationsmodus
 
-Startet automatisch, wenn das gespeicherte WLAN nicht gefunden wird, oder auf
+Startet automatisch, wenn das gespeicherte WLAN nicht erreichbar ist, oder auf
 Wunsch:
 
 > **BOOT im laufenden Betrieb 3 Sekunden gedrückt halten.**
@@ -196,6 +227,11 @@ Dann:
 3. SSID aus der Liste wählen (oder eintippen), Passwort und Gerätename
    eintragen, „Speichern und neu starten".
 4. Das Gerät startet neu und meldet sich im Heimnetz an.
+
+Ohne Konfiguration beendet sich der Modus von selbst: **nach 15 Minuten ohne
+verbundenen Client startet das Gerät neu** und versucht wieder das gespeicherte
+Netz. So bleibt eine bereits montierte Einheit nicht dauerhaft im Access Point
+hängen, wenn beim Einschalten gerade kein Empfang war.
 
 Wichtig:
 
@@ -214,8 +250,41 @@ Wichtig:
 | Pfad | Inhalt |
 |---|---|
 | `/` | Webseite (HTML, Aktualisierung alle 10 s) |
-| `/api`, `/api/values` | JSON (siehe unten) |
+| `/api`, `/api/values` | JSON (siehe unten) – **nur im lokalen Netz** |
 | `/save` (nur im Konfigmodus) | Formular speichern, Gerät startet neu |
+
+### Nur die Seite von außen (Portfreigabe)
+
+Für einen Blick von unterwegs gibt es einen **zweiten HTTP-Server auf Port
+8080**, der ausschließlich `/` kennt. Er hat keinen Handler für `/api*`, die
+Anfrage endet dort mit **404** – die JSON-Schnittstelle bleibt also technisch
+auf das Heimnetz beschränkt, nicht nur „versteckt". Die Seite auf 8080 zeigt
+zusätzlich keinen Hinweis auf den JSON-Pfad.
+
+| Zugriff | Port | Inhalt |
+|---|---|---|
+| Heimnetz | **80** | Seite **und** JSON |
+| Portfreigabe von außen | **8080** | **nur** die Seite |
+
+Port des zweiten Servers: `WEBSERVER_PUBLIC_PORT` in
+[main/webserver.h](main/webserver.h); `0` schaltet ihn ab.
+
+Beispiel für die FRITZ!Box (Internet → Freigaben → Portfreigaben):
+
+| Feld | Wert |
+|---|---|
+| Gerät | Außenthermometer (192.168.123.191) |
+| Protokoll | TCP |
+| externer Port | z. B. 8080 |
+| interner Port | **8080** (nicht 80 – sonst wäre das JSON erreichbar) |
+
+Aufruf dann: `http://<name>.ddns.net:8080/`
+
+Hinweise: Der zweite Server antwortet ohne Anmeldung – er zeigt Name,
+Temperatur, Feuchte, IP und Empfangspegel, aber keine Einstellungen. Die
+Konfigurationsseite liegt im Geräte-Access-Point (192.168.4.1) und ist über
+eine Portfreigabe grundsätzlich nicht erreichbar. Wer es noch strenger will,
+nimmt statt der Freigabe ein VPN (WireGuard in der FRITZ!Box).
 
 ### Aufruf über den Gerätenamen (mDNS)
 
@@ -264,7 +333,10 @@ Beispiel `curl http://192.168.123.123/api/values`:
   "time": "22.10. 19:25",
   "ip": "192.168.123.123",
   "rssi_dbm": -46,
-  "uptime_s": 11
+  "uptime_s": 11,
+  "ssid": "FRITZ!Box 7590 j.oe",
+  "bssid": "2c:91:ab:5e:e5:6a",
+  "channel": 1
 }
 ```
 
@@ -272,6 +344,9 @@ Beispiel `curl http://192.168.123.123/api/values`:
   `temperature_c` und `humidity_rh` `null`).
 - `age_s` ist das Alter der letzten Messung in Sekunden, `time` die lokale
   Uhrzeit (vor dem NTP-Abgleich `01.01. 00:00`).
+- `bssid`/`channel` zeigen, mit welchem Zugangspunkt das Gerät verbunden ist –
+  in einem Mesh mit mehreren Knoten ist das der schnellste Weg zu sehen, ob der
+  Empfang von einem anderen Knoten kommt.
 - JSON nutzt den Dezimalpunkt, die HTML-Seite das Dezimalkomma.
 
 ## Aufbau des Codes
@@ -291,6 +366,7 @@ Beispiel `curl http://192.168.123.123/api/values`:
 | [main/textutil.c](main/textutil.c) | HTML-/JSON-Escaping |
 | [main/board.h](main/board.h) | Pins, I²C-Adresse, RGB-LED (GPIO, Helligkeit) |
 | [main/connect.example.h](main/connect.example.h) | Vorlage für die WLAN- und Geräte-Konfiguration |
+| [tools/flash-und-pruefen.ps1](tools/flash-und-pruefen.ps1) | Flashen + Kaltstart-Prüfung ohne Internet |
 
 ## Fehlersuche
 
@@ -303,5 +379,6 @@ Beispiel `curl http://192.168.123.123/api/values`:
 | Gerät startet unerwartet neu | Log beim Start nennt den Grund, z. B. `BROWNOUT (supply too weak)`. Bei `task watchdog` stand vorher im Log, welcher Task nicht mehr reagiert hat. |
 | `<name>.local` wird nicht gefunden | mDNS am Client fehlt/deaktiviert (Gäste-WLAN, Client-Isolation), oder der Name ist anders als erwartet – er steht im Log (`discovery: announced as ...`) und auf der Konfigurationsseite. Alternativ die IP verwenden. |
 | WLAN-Reichweite bricht ein (RSSI deutlich schlechter und schwankend) | Antennenstecker sitzt nicht oder ist beschädigt: U.FL/IPEX gerade andrücken, Kabel nicht knicken. U.FL ist nur für wenige Steckzyklen ausgelegt, schräges Aufdrücken verbiegt den Mittelstift der Buchse. Bei WROOM-1U-Modulen gibt es keine PCB-Antenne – ohne intaktes Kabel bleibt nur Leckstrahlung (Verbindung bricht dann ganz weg). Bei -67 dBm blinkt die blaue LED einmal. |
+| Dauerhaft schwacher Empfang am Montageort (z. B. -82 dBm) | Zuerst ins Log sehen: Beim Start listet das Gerät jeden Zugangspunkt mit Pegel. Hängt es am schwächeren Mesh-Knoten, verbindet es die aktuelle Firmware selbst mit dem stärksten. Hilft das nicht: Gerät näher zur Hauswand/zum Fenster setzen, Repeater oder Mesh-Knoten in der Nähe, oder ein Modul mit besserer Antenne. Die blaue LED ist unter -80 dBm aus – das ist so gewollt. |
 | RGB-LED bleibt dunkel | Firmware passt auf GPIO38 und GPIO48; leuchtet nichts, ist die LED-Helligkeit zu niedrig (`BOARD_RGB_LED_BRIGHTNESS`) oder die Board-Revision nutzt einen anderen Pin. |
 | Port belegt beim Flashen | Ein anderes Programm (Monitor, serielles Terminal) hält COM10. |
